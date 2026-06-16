@@ -3,7 +3,7 @@ package rpc
 // Request is an incoming JSON-RPC message from the Neovim plugin.
 type Request struct {
 	// ID is an opaque string chosen by the client to correlate responses.
-	ID string `json:"id"`
+	ID int `json:"id"`
 
 	// Method is the operation: "eval" or "shutdown".
 	Method string `json:"method"`
@@ -16,7 +16,7 @@ type Request struct {
 // Response is a JSON-RPC reply sent back to the Neovim plugin.
 type Response struct {
 	// ID matches the Request.ID for correlation.
-	ID string `json:"id"`
+	ID int `json:"id"`
 
 	// Value is the repr of the evaluated expression, empty if no value.
 	Value string `json:"value"`
