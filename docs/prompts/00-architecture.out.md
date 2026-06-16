@@ -31,7 +31,6 @@ it is spawned **once** for that process's lifetime.
 ```
 nvim-revaluator/
 ├── Makefile
-├── README.md
 ├── go.mod
 ├── cmd/
 │   └── server/
