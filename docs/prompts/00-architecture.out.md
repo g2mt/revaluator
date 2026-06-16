@@ -30,29 +30,29 @@ it is spawned **once** for that process's lifetime.
 
 ```
 nvim-revaluator/
-├── Makefile
-├── go.mod
+├── Makefile                          [EASY]
+├── go.mod                            [EASY]
 ├── cmd/
 │   └── server/
-│       └── main.go              # entrypoint, shared by all language builds
+│       └── main.go              # entrypoint, shared by all language builds  [EASY]
 ├── internal/
 │   ├── rpc/
-│   │   ├── protocol.go          # request/response types
-│   │   └── server.go            # stdio JSON-RPC loop
+│   │   ├── protocol.go          # request/response types  [EASY]
+│   │   └── server.go            # stdio JSON-RPC loop  [HARD]
 │   └── lang/
-│       ├── lang.go              # Interpreter interface + registry
-│       ├── python.go            # //go:build python  (cgo + libpython)
-│       └── javascript.go        # //go:build javascript (stub, future)
+│       ├── lang.go              # Interpreter interface + registry  [EASY]
+│       ├── python.go            # //go:build python  (cgo + libpython)  [HARD]
+│       └── javascript.go        # //go:build javascript (stub, future)  [EASY]
 ├── lua/
 │   └── revaluator/
-│       ├── init.lua             # setup(), public API
-│       ├── config.lua           # defaults + user config merge
-│       ├── client.lua           # spawn + JSON-RPC over job stdio
-│       ├── manager.lua          # per-buffer client lifecycle
-│       ├── parser.lua           # current-expression / offset detection
-│       └── ui.lua               # virtual text preview + commit
+│       ├── init.lua             # setup(), public API  [HARD]
+│       ├── config.lua           # defaults + user config merge  [EASY]
+│       ├── client.lua           # spawn + JSON-RPC over job stdio  [HARD]
+│       ├── manager.lua          # per-buffer client lifecycle  [EASY]
+│       ├── parser.lua           # current-expression / offset detection  [EASY]
+│       └── ui.lua               # virtual text preview + commit  [HARD]
 ├── plugin/
-│   └── revaluator.lua           # plugin guard, default keymap wiring
+│   └── revaluator.lua           # plugin guard, default keymap wiring  [EASY]
 └── docs/
     └── prompts/
 ```
