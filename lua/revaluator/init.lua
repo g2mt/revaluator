@@ -71,7 +71,6 @@ function M.setup(user_opts)
   end
 
   M.config = config.merge(user_opts)
-  print(vim.inspect(M.config)) 
 
   manager.setup_autocmds(M.config)
   setup_preview_clear_autocmds()
