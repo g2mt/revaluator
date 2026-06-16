@@ -27,7 +27,15 @@ function M.get_or_spawn(bufnr, config)
   end
 
   local ft = vim.bo[bufnr].filetype
-  local bin_dir = config.bin_dir or vim.fn.stdpath("data") .. "/revaluator/bin"
+  local bin_dir = nil
+  if config.bin_dir ~= nil then
+    bin_dir = config.bin_dir
+  else
+    local current_file_path = debug.getinfo(1, "S").source:sub(2)
+    local manager_dir = vim.fs.dirname(current_file_path)
+    -- manager_dir = plugin_dir/lua/revaluator
+    bin_dir = manager_dir .. "/../../bin"
+  end
   local bin = bin_dir .. "/server-" .. ft
 
   local c = client.spawn(bin, config)
