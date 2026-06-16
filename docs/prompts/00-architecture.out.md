@@ -9,17 +9,17 @@ the result into the buffer.
 
 Two components:
 
-1. **Neovim plugin** (Lua) — UI, keybinding, buffer parsing, RPC client.
-2. **Go server** (one binary per language) — owns a persistent interpreter,
-   evaluates expressions, returns results.
+1. **Neovim plugin** (Lua) — UI, keybinding, buffer handling, RPC client.
+2. **Go server** (one binary per language) — owns a persistent, embedded
+   language interpreter, parses and evaluates expressions, returns results.
 
 ```
 +------------------+        JSON-RPC over stdio        +-------------------+
 |  Neovim (Lua)    | <-------------------------------> |  server-python    |
-|  - keymap        |                                   |  - python interp  |
-|  - parse line    |                                   |  - eval expr      |
-|  - virtual text  |                                   +-------------------+
-|  - commit text   |
+|  - keymap        |                                   |  - libpython       |
+|  - send buffer   |                                   |  - parse AST       |
+|  - virtual text  |                                   |  - eval expr      |
+|  - commit text   |                                   +-------------------+
 +------------------+
 ```
 
@@ -42,7 +42,7 @@ nvim-revaluator/
 │   │   └── server.go            # stdio JSON-RPC loop
 │   └── lang/
 │       ├── lang.go              # Interpreter interface + registry
-│       ├── python.go            # //go:build python
+│       ├── python.go            # //go:build python  (cgo + libpython)
 │       └── javascript.go        # //go:build javascript (stub, future)
 ├── lua/
 │   └── revaluator/
@@ -50,7 +50,7 @@ nvim-revaluator/
 │       ├── config.lua           # defaults + user config merge
 │       ├── client.lua           # spawn + JSON-RPC over job stdio
 │       ├── manager.lua          # per-buffer client lifecycle
-│       ├── parser.lua           # expression extraction from buffer
+│       ├── parser.lua           # current-expression / offset detection
 │       └── ui.lua               # virtual text preview + commit
 ├── plugin/
 │   └── revaluator.lua           # plugin guard, default keymap wiring
@@ -68,6 +68,9 @@ nvim-revaluator/
   - `javascript.go` → `//go:build javascript`
 - Exactly one language file compiles per build, registering its `Interpreter`
   implementation into the registry that `main.go` consumes.
+- Each language **must use that language's own interpreter library** for both
+  parsing and evaluation. Python uses **libpython** (embedded via cgo); there is
+  no hand-written parser. Parsing produces the language's native AST.
 
 ### Makefile
 
@@ -79,15 +82,17 @@ BINDIR  ?= bin
 
 all: python
 
+# python build requires cgo + libpython dev headers/libs
 python:
-	$(GO) build -tags python -o $(BINDIR)/server-python ./cmd/server
+	CGO_ENABLED=1 $(GO) build -tags python -o $(BINDIR)/server-python ./cmd/server
 
 clean:
 	rm -rf $(BINDIR)
 ```
 
-Adding a language = new `internal/lang/<lang>.go` with its build tag + a new
-Makefile rule. No changes to the RPC layer or `main.go`.
+Adding a language = new `internal/lang/<lang>.go` with its build tag, linking
+that language's interpreter library + a new Makefile rule. No changes to the RPC
+layer or `main.go`.
 
 ## Go Server
 
@@ -95,10 +100,16 @@ Makefile rule. No changes to the RPC layer or `main.go`.
 
 ```go
 type Interpreter interface {
-    // Start launches the underlying language process. Called once.
+    // Start initializes the embedded interpreter. Called once.
     Start(ctx context.Context) error
-    // Eval evaluates source and returns the string representation of the result.
-    Eval(source string) (string, error)
+
+    // Eval evaluates the expression located at byte `offset` within source.
+    //   - source is the full buffer text.
+    //   - offset is the byte position of the start of the current line.
+    // The implementation evaluates everything PRIOR to offset to establish
+    // state, then evaluates the current expression and returns its result.
+    Eval(source string, offset int) (string, error)
+
     // Close terminates the interpreter.
     Close() error
 }
@@ -110,15 +121,26 @@ func Register(i Interpreter) { Active = i }
 
 ### Python implementation (`internal/lang/python.go`, `//go:build python`)
 
-- Starts `python3 -i` (or `python3 -u` driving a small REPL driver) as a long-
-  lived subprocess, kept open for the process lifetime.
-- Maintains interpreter state across `Eval` calls so previously evaluated lines
-  remain in scope.
-- To get a value: evaluate the expression and capture `repr(result)`. Statements
-  (assignments, defs) are executed for their side effects and return empty.
-- Uses a sentinel/marker written to stdout to delimit output of each evaluation,
-  so the Go side knows when a result is complete.
-- Dependency budget: stdlib only (`os/exec`, `bufio`, `encoding/json`).
+- Embeds **libpython** via cgo and initializes one interpreter for the process
+  lifetime (`Py_Initialize` on `Start`, single `__main__` namespace reused
+  across calls).
+- All parsing uses libpython itself: source is compiled into Python's **AST**
+  (via the `ast`/`compile` machinery). Note that **parsing strips comments** —
+  the AST contains no comment nodes.
+- `Eval(source, offset)` performs:
+  1. Split `source` into the **prefix** (bytes `[0, exprStart)`) and the
+     **current expression** beginning at the current line.
+  2. Use the AST to find where the current expression actually begins (the
+     statement/expression whose start lies at/after `offset`), giving
+     `exprStart`; everything before that is the prefix.
+  3. Compare the prefix against the last evaluated prefix (cached hash). If it
+     **changed**, reset the interpreter namespace and re-execute the entire
+     prefix to rebuild state. If unchanged, keep the current interpreter state.
+  4. Evaluate the current expression in that namespace and return
+     `repr(result)`. Statements with no value (assignments, defs) return empty.
+- State carried between calls: the `__main__` namespace + the hash of the last
+  evaluated prefix.
+- Dependency budget: Go stdlib + cgo binding to libpython only.
 
 ### RPC (`internal/rpc`)
 
@@ -131,7 +153,8 @@ used for logging.
 type Request struct {
     ID     int    `json:"id"`
     Method string `json:"method"`     // "eval" | "shutdown"
-    Source string `json:"source"`     // full text to evaluate (may be multi-line)
+    Source string `json:"source"`     // full buffer text
+    Offset int    `json:"offset"`     // byte offset of start of current line
 }
 
 type Response struct {
@@ -144,7 +167,7 @@ type Response struct {
 
 `server.go` runs the read→dispatch→write loop:
 1. Read a line, decode `Request`.
-2. On `eval`, call `lang.Active.Eval(req.Source)`.
+2. On `eval`, call `lang.Active.Eval(req.Source, req.Offset)`.
 3. Encode `Response`, write line, flush.
 4. On `shutdown`, close interpreter and exit.
 
@@ -159,16 +182,18 @@ Defaults, merged with user opts in `setup`:
 ```lua
 {
   keymap = "<A-w>",
-  filetypes = { python = "server-python" },  -- filetype -> binary name
-  bin_dir = nil,   -- resolved relative to plugin root if nil
+  bin_dir = nil,   -- resolved to <plugin_root>/bin if nil
   timeout_ms = 5000,
 }
 ```
 
+The server binary for a buffer is **always** `bin_dir/server-<filetype>`
+(e.g. `bin/server-python`). No per-language configuration table.
+
 ### manager.lua — per-buffer interpreter lifecycle
 
 - Keeps a table `bufnr -> client`.
-- On first eval in a buffer, resolves the binary from the buffer's `filetype`,
+- On first eval in a buffer, resolves the binary as `bin_dir/server-<filetype>`,
   spawns it via `client.lua`, and caches it. **One process per file.**
 - Closes the client on `BufUnload`/`BufDelete` (autocmd) and on `VimLeavePre`.
 
@@ -179,16 +204,12 @@ Defaults, merged with user opts in `setup`:
   resolves via callback when the matching `Response` line arrives.
 - Buffers partial lines from `on_stdout`.
 
-### parser.lua — expression extraction
+### parser.lua — offset detection
 
-- Determines the expression to evaluate starting at the current cursor line.
-- For Python: collect the current line; if it appears incomplete (open
-  brackets/parens, trailing backslash, or open string), extend downward until
-  balanced — supporting multi-line expressions.
-- Tracks whether the buffer's interpreter has been "primed". On the **first**
-  eval for a buffer, the source sent is **all lines before the current line**
-  concatenated, then the expression — so prior context is established once.
-  Subsequent evals send only the current expression.
+- Sends the **full buffer text** as `source`.
+- Computes `offset` = byte offset of the start of the current cursor line.
+- The server (using the real language AST) decides the exact expression bounds;
+  the Lua side does not attempt language-aware parsing.
 
 ### ui.lua — preview and commit
 
@@ -208,10 +229,11 @@ keypress ->
   if preview active for this line:
       commit text to buffer; clear preview
   else:
-      expr = parser.extract(bufnr, cursor_line)
+      bufnr  = current buffer
+      source = full buffer text
+      offset = byte offset of start of current line
       client = manager.get_or_spawn(bufnr)
-      source = parser.build_source(bufnr, cursor_line, expr, client.primed)
-      client:eval(source, function(resp)
+      client:eval(source, offset, function(resp)
           if resp.ok and resp.value ~= "" then
               ui.preview(bufnr, cursor_line, resp.value)
           else
@@ -223,15 +245,19 @@ keypress ->
 ## Data Flow Summary
 
 1. User presses `<A-w>` on a line.
-2. Plugin extracts the (possibly multi-line) expression.
+2. Plugin sends the full buffer text + the byte offset of the current line.
 3. Manager ensures one server process exists for the buffer.
-4. First call also sends all preceding lines to prime interpreter state.
-5. Server evaluates in the persistent interpreter, returns `repr`.
-6. Plugin shows result as inline virtual text.
-7. Second `<A-w>` commits the text into the buffer.
+4. Server parses the source with the native interpreter AST, locates the
+   current expression at the offset, and isolates the prefix before it.
+5. If the prefix changed since the last call, the interpreter is reset and the
+   prefix re-evaluated; otherwise the existing interpreter state is kept.
+6. The current expression is evaluated and its `repr` returned.
+7. Plugin shows result as inline virtual text.
+8. Second `<A-w>` commits the text into the buffer.
 
 ## Dependencies
 
-- **Go:** standard library only.
+- **Go:** standard library + cgo binding to the language's own interpreter
+  library (libpython for Python). No third-party Go modules.
 - **Lua:** Neovim built-in APIs only (`jobstart`, extmarks, autocmds). No
   external Lua libraries.
