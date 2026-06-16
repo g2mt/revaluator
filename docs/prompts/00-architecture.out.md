@@ -151,17 +151,15 @@ used for logging.
 ```go
 // protocol.go
 type Request struct {
-    ID     int    `json:"id"`
-    Method string `json:"method"`     // "eval" | "shutdown"
-    Source string `json:"source"`     // full buffer text
-    Offset int    `json:"offset"`     // byte offset of start of current line
+    ID     string         `json:"id"`
+    Method string         `json:"method"`     // "eval" | "shutdown"
+    Params map[string]any `json:"params"`
 }
 
 type Response struct {
     ID    int    `json:"id"`
-    Ok    bool   `json:"ok"`
     Value string `json:"value"`       // repr of result, empty if no value
-    Error string `json:"error"`       // error message if Ok == false
+    Error string `json:"error"`       // error message if Error is non-empty
 }
 ```
 
