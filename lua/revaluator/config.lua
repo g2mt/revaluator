@@ -11,7 +11,7 @@ M.defaults = {
   bin_dir = nil, -- resolved to <plugin_root>/bin if nil
   timeout_ms = 5000,
   debug = false, -- stub mode: no server spawned, eval always returns "test"
-  prefix_highlight = true, -- visually highlight the expression prefix on eval
+  prefix_highlight = false, -- visually highlight the expression prefix on eval
   prefix_hl_group = "Visual", -- highlight group used for the prefix
 }
 
