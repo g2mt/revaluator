@@ -26,3 +26,7 @@ require("revaluator").setup()
 Default keymap:
 
   - `<A-w>`: press to preview, press again to commit.
+
+## License
+
+MIT License. Contains AI generated code.
