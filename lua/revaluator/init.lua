@@ -39,6 +39,9 @@ local function on_keypress()
         ui.error(resp.error)
       elseif resp and resp.value and resp.value ~= "" then
         ui.preview(bufnr, line, resp.value)
+        if M.config.prefix_highlight then
+          ui.highlight_prefix(bufnr, line, M.config.prefix_hl_group)
+        end
       end
     end)
   end)

@@ -18,6 +18,9 @@ local ns = vim.api.nvim_create_namespace("revaluator")
 --- @type revaluator.Preview|nil
 local active = nil
 
+--- @type { bufnr: number, line: number, extmark: number }|nil
+local active_prefix = nil
+
 --- Shows the evaluation result as virtual text at the end of the current line.
 ---
 --- Uses nvim_buf_set_extmark with virt_text and virt_text_pos = "eol".
@@ -81,6 +84,7 @@ function M.clear()
     end
     active = nil
   end
+  M.clear_prefix()
 end
 
 --- Returns true if a preview is active for the given buffer and line.
@@ -90,6 +94,46 @@ end
 --- @return boolean
 function M.is_preview_active(bufnr, line)
   return active ~= nil and active.bufnr == bufnr and active.line == line
+end
+
+--- Highlights the expression prefix: all lines from the start of the buffer
+--- up to (but not including) the cursor line.
+---
+--- Uses an extmark with hl_group for a visual-only highlight (no Visual
+--- mode side-effects). Cleared automatically on cursor move or edit.
+---
+--- @param bufnr number
+--- @param line number 0-indexed cursor line (highlight ends before this line)
+--- @param hl_group string highlight group name
+function M.highlight_prefix(bufnr, line, hl_group)
+  M.clear_prefix()
+
+  if not vim.api.nvim_buf_is_valid(bufnr) or line <= 0 then
+    return
+  end
+
+  local extmark = vim.api.nvim_buf_set_extmark(bufnr, ns, 0, 0, {
+    end_row = line,
+    end_col = 0,
+    hl_group = hl_group,
+    hl_eol = true,
+  })
+
+  active_prefix = {
+    bufnr = bufnr,
+    line = line,
+    extmark = extmark,
+  }
+end
+
+--- Clears the prefix highlight extmark.
+function M.clear_prefix()
+  if active_prefix then
+    if vim.api.nvim_buf_is_valid(active_prefix.bufnr) then
+      vim.api.nvim_buf_del_extmark(active_prefix.bufnr, ns, active_prefix.extmark)
+    end
+    active_prefix = nil
+  end
 end
 
 --- Displays an evaluation error on the status line.
