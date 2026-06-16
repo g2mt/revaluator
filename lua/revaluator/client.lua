@@ -52,22 +52,9 @@ function M.spawn(bin, config)
     end
   end
 
-  --- Appends chunk to line_buf and processes every complete line.
   local function on_stdout(_, data)
-    if not data then
-      return
-    end
-    for _, chunk in ipairs(data) do
-      line_buf = line_buf .. chunk
-      while true do
-        local nl = line_buf:find("\n")
-        if not nl then
-          break
-        end
-        local line = line_buf:sub(1, nl - 1)
-        line_buf = line_buf:sub(nl + 1)
-        dispatch_line(line)
-      end
+    for _, line in ipairs(data) do
+      dispatch_line(line)
     end
   end
 
