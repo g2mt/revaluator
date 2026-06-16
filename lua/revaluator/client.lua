@@ -82,6 +82,7 @@ function M.spawn(bin, config)
 
   --- Sends a JSON-RPC request. Returns the request id.
   local function send_request(method, params)
+    -- print(vim.inspect(params))
     next_id = next_id + 1
     local id = next_id
     local req = { id = id, method = method, params = params or {} }
