@@ -63,7 +63,12 @@ end
 ---
 --- @param user_opts revaluator.Config|nil
 function M.setup(user_opts)
+  if M.config ~= nil then
+    return
+  end
+
   M.config = config.merge(user_opts)
+  print(vim.inspect(M.config)) 
 
   manager.setup_autocmds(M.config)
   setup_preview_clear_autocmds()

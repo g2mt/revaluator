@@ -35,7 +35,7 @@ function M.preview(bufnr, line, text)
   end
 
   local extmark = vim.api.nvim_buf_set_extmark(bufnr, ns, line, 0, {
-    virt_text = { { " = " .. text, "Comment" } },
+    virt_text = { { text, "Comment" } },
     virt_text_pos = "eol",
   })
 
@@ -68,7 +68,7 @@ function M.commit(bufnr, line)
   -- Append the text to the end of the line.
   local current = vim.api.nvim_buf_get_lines(bufnr, line, line + 1, false)[1] or ""
   local col = #current
-  vim.api.nvim_buf_set_text(bufnr, line, col, line, col, { text })
+  vim.api.nvim_buf_set_text(bufnr, line, col, line, col, { " " .. text })
 
   M.clear()
 end

@@ -4,6 +4,8 @@
 --- one persistent server process. Spawns on first eval and tears down
 --- on buffer unload or Vim exit.
 
+local client = require("revaluator.client")
+
 local M = {}
 
 --- @type table<number, table> bufnr -> client table
@@ -20,8 +22,6 @@ local clients = {}
 function M.get_or_spawn(bufnr, config)
   -- Returns the cached client for the buffer, spawning one if needed.
   -- The actual spawning is delegated to client.lua.
-  --
-  -- TODO: implement client lookup and spawn logic
   if clients[bufnr] then
     return clients[bufnr]
   end
@@ -30,20 +30,18 @@ function M.get_or_spawn(bufnr, config)
   local bin_dir = config.bin_dir or vim.fn.stdpath("data") .. "/revaluator/bin"
   local bin = bin_dir .. "/server-" .. ft
 
-  -- Stub: in the hard implementation, client.lua#spawn(bin, config) is called.
-  -- For now just store a placeholder.
-  local client = { bin = bin, bufnr = bufnr }
-  clients[bufnr] = client
-  return client
+  local c = client.spawn(bin, config)
+  clients[bufnr] = c
+  return c
 end
 
 --- Tears down the client for a buffer, closing the server process.
 --- @param bufnr number
 function M.detach(bufnr)
-  local client = clients[bufnr]
-  if client then
-    -- TODO: send shutdown request and clean up job
+  local c = clients[bufnr]
+  if c then
     clients[bufnr] = nil
+    c:shutdown()
   end
 end
 

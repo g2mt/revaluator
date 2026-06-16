@@ -10,13 +10,14 @@ M.defaults = {
   keymap = "<A-w>",
   bin_dir = nil, -- resolved to <plugin_root>/bin if nil
   timeout_ms = 5000,
+  debug = false, -- stub mode: no server spawned, eval always returns "test"
 }
 
 --- Merges user-supplied options on top of defaults.
 --- @param user_opts revaluator.Config|nil
 --- @return revaluator.Config
 function M.merge(user_opts)
-  return vim.tbl_deep_extend("keep", user_opts or {}, M.defaults)
+  return vim.tbl_deep_extend("force", M.defaults, user_opts or {})
 end
 
 return M
