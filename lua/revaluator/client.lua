@@ -30,7 +30,6 @@ function M.spawn(bin, config)
   local pending = {} --- @type table<number, function>  request id -> callback
   local next_id = 0
   local closed = false
-  local line_buf = "" -- accumulate partial stdout data until we have full lines
   local job_id = -1
 
   --- Dispatches a single completed line (JSON object) to its callback.
@@ -52,21 +51,6 @@ function M.spawn(bin, config)
     end
   end
 
-  local function on_stdout(_, data)
-    for _, line in ipairs(data) do
-      dispatch_line(line)
-    end
-  end
-
-  local function on_exit(_, code)
-    vim.schedule(function()
-      for id, cb in pairs(pending) do
-        cb({ id = id, value = "", error = "server exited with code " .. tostring(code) })
-      end
-      pending = {}
-    end)
-  end
-
   --- Sends a JSON-RPC request. Returns the request id.
   local function send_request(method, params)
     -- print(vim.inspect(params))
@@ -82,11 +66,22 @@ function M.spawn(bin, config)
 
   -- ── spawn ────────────────────────────────────────────────────────────────
   job_id = vim.fn.jobstart({ bin }, {
-    on_stdout = on_stdout,
+    on_stdout = function(_, data)
+      for _, line in ipairs(data) do
+        dispatch_line(line)
+      end
+    end,
     on_stderr = function(_, data)
       -- stderr is used for server-side logging; silently discard.
     end,
-    on_exit = on_exit,
+    on_exit = function(_, code)
+      vim.schedule(function()
+        for id, cb in pairs(pending) do
+          cb({ id = id, value = "", error = "server exited with code " .. tostring(code) })
+        end
+        pending = {}
+      end)
+    end,
   })
 
   if job_id <= 0 then
