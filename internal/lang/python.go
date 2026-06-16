@@ -12,11 +12,10 @@ import "C"
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"runtime"
+	"strings"
 	"sync"
 	"unsafe"
 )
@@ -62,8 +61,8 @@ def _reval_split(_source, _offset):
 // pythonInterpreter embeds libpython via cgo.
 //
 // It maintains one Py_Initialize'd interpreter for the process lifetime.
-// A single __main__ namespace dict (ns) is reused across Eval calls. The hash
-// of the last evaluated prefix is cached so the namespace is only rebuilt when
+// A single __main__ namespace dict (ns) is reused across Eval calls. The
+// last evaluated prefix is cached so the namespace is only rebuilt when
 // the prefix changes.
 type pythonInterpreter struct {
 	mu sync.Mutex
@@ -78,8 +77,8 @@ type pythonInterpreter struct {
 	// split is a borrowed-ref-turned-owned reference to _reval_split.
 	split *C.PyObject
 
-	// lastHash is the SHA-256 (hex) of the last successfully evaluated prefix.
-	lastHash string
+	// lastPrefix is the last successfully evaluated prefix text.
+	lastPrefix string
 
 	// tstate is the saved main thread state captured after initialization so
 	// the GIL can be re-acquired per Eval via PyGILState_Ensure.
@@ -126,9 +125,9 @@ func (p *pythonInterpreter) Start(ctx context.Context) error {
 	}
 	C.Py_IncRef(p.split) // take an owned reference
 
-	// Fresh, empty namespace; lastHash matches the empty prefix.
+	// Fresh, empty namespace.
 	p.resetNamespace()
-	p.lastHash = hashString("")
+	p.lastPrefix = ""
 
 	// Release the GIL; Eval re-acquires it per call.
 	p.tstate = C.PyEval_SaveThread()
@@ -138,9 +137,12 @@ func (p *pythonInterpreter) Start(ctx context.Context) error {
 
 // Eval evaluates the Python expression at byte offset within source.
 //
-// It locates the current expression via the AST helper, rebuilds the namespace
-// only if the prefix changed, then evaluates the current expression returning
-// repr(result). Statements with no value (assignments, defs) return "".
+// It locates the current expression via the AST helper, then incrementally
+// maintains interpreter state: if the prefix is unchanged the namespace is
+// kept; if the prefix grew by one or more statements, only the delta is
+// evaluated; otherwise the namespace is rebuilt from scratch. It then
+// evaluates the current expression returning repr(result).
+// Statements with no value (assignments, defs) return "".
 func (p *pythonInterpreter) Eval(source string, offset int) (string, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -165,16 +167,33 @@ func (p *pythonInterpreter) Eval(source string, offset int) (string, error) {
 	}
 	prefix := source[:exprStart]
 
-	// 2. Rebuild namespace only when the prefix changed.
-	h := hashString(prefix)
-	if h != p.lastHash {
-		p.resetNamespace()
-		if err := runCode(prefix, C.int(C.Py_file_input), p.ns); err != nil {
-			// Force a rebuild on the next call.
-			p.lastHash = ""
-			return "", err
+	// 2. Maintain interpreter state based on prefix changes.
+	if prefix != p.lastPrefix {
+		if p.lastPrefix != "" && strings.HasPrefix(prefix, p.lastPrefix) {
+			// Prefix grew: evaluate only the new portion.
+			delta := prefix[len(p.lastPrefix):]
+			if len(delta) > 0 && (delta[0] == '\n' || delta[0] == ';') {
+				if err := runCode(delta, C.int(C.Py_file_input), p.ns); err != nil {
+					p.lastPrefix = ""
+					return "", err
+				}
+			} else {
+				// Not a clean continuation; rebuild from scratch.
+				p.resetNamespace()
+				if err := runCode(prefix, C.int(C.Py_file_input), p.ns); err != nil {
+					p.lastPrefix = ""
+					return "", err
+				}
+			}
+		} else {
+			// Different prefix; rebuild from scratch.
+			p.resetNamespace()
+			if err := runCode(prefix, C.int(C.Py_file_input), p.ns); err != nil {
+				p.lastPrefix = ""
+				return "", err
+			}
 		}
-		p.lastHash = h
+		p.lastPrefix = prefix
 	}
 
 	if expr == "" {
@@ -383,12 +402,6 @@ func pyFetchError() error {
 		return fmt.Errorf("%s: %s", name, msg)
 	}
 	return errors.New(msg)
-}
-
-// hashString returns the hex SHA-256 of s.
-func hashString(s string) string {
-	sum := sha256.Sum256([]byte(s))
-	return hex.EncodeToString(sum[:])
 }
 
 func init() {

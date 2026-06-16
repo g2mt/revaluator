@@ -133,20 +133,20 @@ func TestEvalPrefixChangeRebuildsState(t *testing.T) {
 	}
 }
 
-func TestEvalUnchangedPrefixKeepsHash(t *testing.T) {
+func TestEvalUnchangedPrefixKeepsState(t *testing.T) {
 	p := newStartedInterpreter(t)
 
 	source := "k = 7\nk * 2"
 	if _, err := evalLine(t, p, source); err != nil {
 		t.Fatalf("Eval error: %v", err)
 	}
-	firstHash := p.lastHash
+	firstPrefix := p.lastPrefix
 
 	if _, err := evalLine(t, p, source); err != nil {
 		t.Fatalf("Eval error: %v", err)
 	}
-	if p.lastHash != firstHash {
-		t.Fatalf("prefix hash changed on identical prefix: %q -> %q", firstHash, p.lastHash)
+	if p.lastPrefix != firstPrefix {
+		t.Fatalf("prefix changed on identical source: %q -> %q", firstPrefix, p.lastPrefix)
 	}
 }
 
