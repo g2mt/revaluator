@@ -172,7 +172,7 @@ func (p *pythonInterpreter) Eval(source string, line int) (string, error) {
 		if p.lastPrefix != "" && strings.HasPrefix(prefix, p.lastPrefix) {
 			// Prefix grew: evaluate only the new portion.
 			delta := prefix[len(p.lastPrefix):]
-			if len(delta) > 0 && (delta[0] == '\n' || delta[0] == ';') {
+			if len(delta) > 0 && delta[0] == '\n' {
 				if err := runCode(delta, C.int(C.Py_file_input), p.ns); err != nil {
 					p.lastPrefix = ""
 					return "", err
