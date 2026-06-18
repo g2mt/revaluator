@@ -1,4 +1,58 @@
 #!/usr/bin/env node
-// vim: set filetype=javascript :
+// server-javascript — stubbed JSON-RPC evaluator for JavaScript/TypeScript.
+// Always returns "test" for every eval request.
 
+"use strict";
 
+const readline = require("readline");
+
+const rl = readline.createInterface({
+  input: process.stdin,
+  output: process.stdout,
+  terminal: false,
+});
+
+/**
+ * Write a JSON-RPC response followed by a newline to stdout.
+ */
+function respond(id, value, error) {
+  const out = JSON.stringify({
+    id: id,
+    value: value || "",
+    error: error || "",
+  });
+  process.stdout.write(out + "\n");
+}
+
+rl.on("line", (line) => {
+  /** @type {{ id: number, method: string, params?: Record<string, any> }} */
+  let req;
+  try {
+    req = JSON.parse(line);
+  } catch (_) {
+    respond(0, "", "invalid request: not valid JSON");
+    return;
+  }
+
+  // Validate request structure.
+  if (typeof req.id !== "number" || typeof req.method !== "string") {
+    respond(req.id || 0, "", "invalid request: missing id or method");
+    return;
+  }
+
+  switch (req.method) {
+    case "eval":
+      // Stub: always return "test", ignoring source and offset entirely.
+      respond(req.id, "test", "");
+      break;
+
+    case "shutdown":
+      rl.close();
+      process.exit(0);
+      break;
+
+    default:
+      respond(req.id, "", `unknown method: "${req.method}"`);
+      break;
+  }
+});

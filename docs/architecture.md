@@ -46,7 +46,7 @@ stdin/stdout. Each request carries an `id` for callback correlation.
 | Field | Description |
 |-------|-------------|
 | `id` | Echoes the request id |
-| `value` | `repr()` of the evaluated expression, or empty for statements |
+| `value` | Return value of the request. For `eval` this returns the representation of the  evaluated expression. |
 | `error` | Human-readable error message, empty on success |
 
 ## Server Binaries
