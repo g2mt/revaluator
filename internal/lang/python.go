@@ -20,18 +20,15 @@ import (
 	"unsafe"
 )
 
-// splitHelper is executed once at Start. It defines _reval_split(source, offset)
-// which uses Python's own AST to locate the top-level statement whose start lies
-// at or after the given byte offset. It returns (exprStart, exprText) where
-// exprStart is the byte offset of that statement's start and exprText is the
-// statement's source span. Everything before exprStart is the prefix.
-//
-// All offsets are computed in UTF-8 bytes to match what the Neovim plugin sends
-// (a byte offset) and what CPython stores in col_offset (UTF-8 byte columns).
+// splitHelper is executed once at Start. It defines _reval_split(source, line)
+// which uses Python's own AST to locate the top-level statement whose start
+// line (0-based) is at or after the given line. It returns (exprStart, exprText)
+// where exprStart is the byte offset of that statement's start and exprText is
+// the statement's source span. Everything before exprStart is the prefix.
 const splitHelper = `
 import ast as _ast
 
-def _reval_split(_source, _offset):
+def _reval_split(_source, _line):
     _sb = _source.encode('utf-8')
     _starts = [0]
     for _i in range(len(_sb)):
@@ -40,18 +37,20 @@ def _reval_split(_source, _offset):
     try:
         _tree = _ast.parse(_source)
     except SyntaxError:
-        return (_offset, '')
+        _fallback = _starts[_line] if _line < len(_starts) else (_starts[-1] if _starts else 0)
+        return (_fallback, '')
     _target = None
     for _node in _tree.body:
-        _s = _starts[_node.lineno - 1] + _node.col_offset
-        if _s >= _offset:
+        _node_line = _node.lineno - 1  # 0-based
+        if _node_line >= _line:
             _target = _node
             break
     if _target is None:
         if _tree.body:
             _target = _tree.body[-1]
         else:
-            return (_offset, '')
+            _fallback = _starts[_line] if _line < len(_starts) else (_starts[-1] if _starts else 0)
+            return (_fallback, '')
     _start = _starts[_target.lineno - 1] + _target.col_offset
     _end = _starts[_target.end_lineno - 1] + _target.end_col_offset
     _expr = _sb[_start:_end].decode('utf-8')
@@ -135,7 +134,8 @@ func (p *pythonInterpreter) Start(ctx context.Context) error {
 	return nil
 }
 
-// Eval evaluates the Python expression at byte offset within source.
+// Eval evaluates the Python expression at the given 0-based line within
+// source.
 //
 // It locates the current expression via the AST helper, then incrementally
 // maintains interpreter state: if the prefix is unchanged the namespace is
@@ -143,7 +143,7 @@ func (p *pythonInterpreter) Start(ctx context.Context) error {
 // evaluated; otherwise the namespace is rebuilt from scratch. It then
 // evaluates the current expression returning repr(result).
 // Statements with no value (assignments, defs) return "".
-func (p *pythonInterpreter) Eval(source string, offset int) (string, error) {
+func (p *pythonInterpreter) Eval(source string, line int) (string, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -158,7 +158,7 @@ func (p *pythonInterpreter) Eval(source string, offset int) (string, error) {
 	defer C.PyGILState_Release(gil)
 
 	// 1. Split into prefix + current expression using the AST helper.
-	exprStart, expr, err := p.splitSource(source, offset)
+	exprStart, expr, err := p.splitSource(source, line)
 	if err != nil {
 		return "", err
 	}
@@ -264,24 +264,24 @@ func (p *pythonInterpreter) Close() error {
 	return nil
 }
 
-// splitSource calls the helper _reval_split(source, offset) and returns the byte
+// splitSource calls the helper _reval_split(source, line) and returns the byte
 // offset of the current expression and its source text. Must be called with the
 // GIL held.
-func (p *pythonInterpreter) splitSource(source string, offset int) (int, string, error) {
+func (p *pythonInterpreter) splitSource(source string, line int) (int, string, error) {
 	srcObj := pyUnicode(source)
 	if srcObj == nil {
 		return 0, "", pyFetchError()
 	}
-	offObj := C.PyLong_FromLongLong(C.longlong(offset))
-	if offObj == nil {
+	lineObj := C.PyLong_FromLongLong(C.longlong(line))
+	if lineObj == nil {
 		C.Py_DecRef(srcObj)
 		return 0, "", pyFetchError()
 	}
 
 	args := C.PyTuple_New(2)
-	// PyTuple_SetItem steals references to srcObj and offObj.
+	// PyTuple_SetItem steals references to srcObj and lineObj.
 	C.PyTuple_SetItem(args, 0, srcObj)
-	C.PyTuple_SetItem(args, 1, offObj)
+	C.PyTuple_SetItem(args, 1, lineObj)
 
 	res := C.PyObject_CallObject(p.split, args)
 	C.Py_DecRef(args)

@@ -39,13 +39,9 @@ func TestMain(m *testing.M) {
 // evalLine evaluates source treating the final line as the current expression.
 func evalLine(t *testing.T, p *pythonInterpreter, source string) (string, error) {
 	t.Helper()
-	// offset = byte position of the start of the last line.
-	idx := strings.LastIndex(source, "\n")
-	offset := 0
-	if idx >= 0 {
-		offset = idx + 1
-	}
-	return p.Eval(source, offset)
+	// line = 0-based index of the last line.
+	line := strings.Count(source, "\n")
+	return p.Eval(source, line)
 }
 
 func TestEvalSimpleExpression(t *testing.T) {

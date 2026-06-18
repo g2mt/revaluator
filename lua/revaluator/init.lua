@@ -17,7 +17,7 @@ M.config = nil
 ---
 --- Flow:
 ---  1. If a preview is active for the current line, commit the text.
----  2. Otherwise, send the full buffer + cursor line offset to the server.
+---  2. Otherwise, send the full buffer + cursor line number to the server.
 ---  3. On response, show the result as inline virtual text (preview).
 local function on_keypress()
   local bufnr = vim.api.nvim_get_current_buf()
@@ -30,10 +30,10 @@ local function on_keypress()
   end
 
   local source = parser.get_source(bufnr)
-  local offset = parser.get_offset()
+  local cursor_line = parser.get_line()
   local client = manager.get_or_spawn(bufnr, M.config)
 
-  client:eval(source, offset, function(resp)
+  client:eval(source, cursor_line, function(resp)
     vim.schedule(function()
       if resp and resp.error and resp.error ~= "" then
         ui.error(resp.error)

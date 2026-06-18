@@ -9,9 +9,9 @@ and commits them on a second keypress.
 2. If a preview is already shown on the current line → commit the text to the buffer
 3. Otherwise:
    - `parser.get_source(bufnr)` collects the full buffer as a string
-   - `parser.get_offset()` computes the byte offset of the cursor line
+   - `parser.get_line()` returns the 0-based cursor line number
    - `manager.get_or_spawn()` locates or starts the per-buffer server for the current filetype
-   - `client:eval(source, offset, callback)` sends a JSON-RPC `eval` request over stdio
+   - `client:eval(source, line, callback)` sends a JSON-RPC `eval` request over stdio
 4. The server binary:
    - Receives the JSON-RPC request on stdin
    - Passes `source` and `offset` to the language interpreter
@@ -29,12 +29,12 @@ stdin/stdout. Each request carries an `id` for callback correlation.
 ### Request
 
 ```json
-{ "id": 1, "method": "eval", "params": { "source": "<full_buffer>", "offset": 42 } }
+{ "id": 1, "method": "eval", "params": { "source": "<full_buffer>", "line": 2 } }
 ```
 
 | Method | Params | Description |
 |--------|--------|-------------|
-| `eval` | `source` (string), `offset` (number) | Evaluate the expression at the given byte offset |
+| `eval` | `source` (string), `line` (number) | Evaluate the expression at the given 0-based line number |
 | `shutdown` | (none) | Gracefully shut down the server |
 
 ### Response
@@ -61,7 +61,7 @@ Binaries can be written in any language, not just Go. The only requirements are:
 - Accept newline-delimited JSON-RPC requests on stdin
 - Write newline-delimited JSON-RPC responses to stdout
 - Implement the `eval` and `shutdown` methods
-- Use the `source`/`offset` params to locate and evaluate the expression around the cursor
+- Use the `source`/`line` params to locate and evaluate the expression around the cursor
 
 Currently provided:
 
@@ -105,7 +105,7 @@ Build tags control which interpreter gets compiled into the binary (currently: `
 | `lua/revaluator/config.lua` | Default config values and merge logic |
 | `lua/revaluator/manager.lua` | Per-buffer server lifecycle: resolve `bin/server-<ft>`, spawn, cache, teardown |
 | `lua/revaluator/client.lua` | JSON-RPC client over `vim.fn.jobstart` stdio; also provides a debug stub |
-| `lua/revaluator/parser.lua` | Extracts full buffer text and cursor byte offset (language-agnostic) |
+| `lua/revaluator/parser.lua` | Extracts full buffer text and cursor line number (language-agnostic) |
 | `lua/revaluator/ui.lua` | Virtual text preview/commit via extmarks; prefix highlighting |
 
 ## Key Design Decisions
@@ -114,7 +114,7 @@ Build tags control which interpreter gets compiled into the binary (currently: `
    keeping interpreter state across multiple evals on consecutive lines
 2. **Full buffer sent every request** — the server always receives the complete buffer
    text, not just the current line, so it can find and evaluate prefix statements
-3. **Language-agnostic Lua layer** — parser.lua sends raw buffer + byte offset;
+3. **Language-agnostic Lua layer** — parser.lua sends raw buffer + cursor line number;
    the server (using language-specific AST) handles expression boundary detection
 4. **Preview then commit UX** — first keypress shows inline virtual text,
    second inserts it; cursor move/change clears preview automatically

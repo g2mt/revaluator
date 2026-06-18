@@ -9,7 +9,7 @@ type Request struct {
 	Method string `json:"method"`
 
 	// Params carries method-specific arguments.
-	// For "eval": {"source": "<full buffer>", "offset": <byte offset>}
+	// For "eval": {"source": "<full buffer>", "line": <0-based line>}
 	Params map[string]any `json:"params"`
 }
 

@@ -12,7 +12,7 @@ local M = {}
 --- Spawns a server process and returns a client object.
 ---
 --- The client object provides:
----   client:eval(source, offset, callback)
+---   client:eval(source, line, callback)
 ---     Sends an "eval" request and invokes callback(response) on reply.
 ---     response has fields: id, value, error.
 ---   client:shutdown()
@@ -100,16 +100,16 @@ function M.spawn(bin, config)
   return {
     --- Evaluate an expression.
     --- @param source string full buffer text
-    --- @param offset number byte offset of cursor line start
+    --- @param line number 0-based cursor line number
     --- @param callback function(response)  response has id, value, error
-    eval = function(_, source, offset, callback)
+    eval = function(_, source, line, callback)
       if closed then
         vim.schedule(function()
           callback({ id = -1, value = "", error = "client closed" })
         end)
         return
       end
-      local id = send_request("eval", { source = source, offset = offset })
+      local id = send_request("eval", { source = source, line = line })
       if id then
         pending[id] = callback
       else
@@ -162,7 +162,7 @@ function M._create_stub()
   local id = 0
   local closed = false
   return {
-    eval = function(_, source, offset, callback)
+    eval = function(_, source, line, callback)
       if closed then
         vim.schedule(function()
           callback({ id = -1, value = "", error = "client closed" })

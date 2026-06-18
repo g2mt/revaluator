@@ -8,14 +8,16 @@ type Interpreter interface {
 	// Start initializes the embedded interpreter. Called once at server startup.
 	Start(ctx context.Context) error
 
-	// Eval evaluates the expression located at byte offset within source.
+	// Eval evaluates the expression located at the given 0-based line within
+	// source.
 	//
 	// source is the full buffer text.
-	// offset is the byte position of the start of the current line.
+	// line is the 0-based cursor line number.
 	//
-	// The implementation evaluates everything prior to offset to establish
-	// state, then evaluates the current expression and returns its result.
-	Eval(source string, offset int) (string, error)
+	// The implementation evaluates everything prior to that line to
+	// establish state, then evaluates the current expression and returns
+	// its result.
+	Eval(source string, line int) (string, error)
 
 	// Close terminates the interpreter and releases resources.
 	Close() error

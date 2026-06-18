@@ -64,15 +64,15 @@ func Serve(stdin io.Reader, stdout io.Writer) error {
 				continue
 			}
 
-			offsetFloat, ok := req.Params["offset"].(float64)
+			lineFloat, ok := req.Params["line"].(float64)
 			if !ok {
 				_ = writeResponse(stdout, Response{
 					ID:    req.ID,
-					Error: "missing or invalid 'offset' parameter (expected number)",
+					Error: "missing or invalid 'line' parameter (expected number)",
 				})
 				continue
 			}
-			offset := int(offsetFloat)
+			line := int(lineFloat)
 
 			if lang.Active == nil {
 				_ = writeResponse(stdout, Response{
@@ -82,7 +82,7 @@ func Serve(stdin io.Reader, stdout io.Writer) error {
 				continue
 			}
 
-			value, err := lang.Active.Eval(source, offset)
+			value, err := lang.Active.Eval(source, line)
 			if err != nil {
 				_ = writeResponse(stdout, Response{
 					ID:    req.ID,
