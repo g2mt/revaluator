@@ -4,15 +4,17 @@ Evaluate the expression under the cursor using a persistent language interpreter
 
 ## How it works
 
-- Neovim plugin (Lua) talks **JSON-RPC over stdio** to a per-buffer Go server.
-- The Go server embeds the language's own interpreter (e.g. **libpython** via cgo).
-- Full buffer text is sent on each eval. The server resets the interpreter and re-evaluates the prefix only when it changes, keeping interpreter state across calls.
+- Neovim plugin (Lua) talks **JSON-RPC over stdio** to a per-buffer server binary.
+- The server uses the language's own **AST** to find the expression under the cursor and split it from the prefix.
+- Prefix statements are evaluated in a persistent runtime so state accumulates across lines.
 
 ## Requirements
 
 - Neovim
-- Go (for building the server)
+- Go (for building the Python server)
+- Node.js (for the JavaScript server)
 - Language-specific requirements:
+  - JavaScript: npm
   - Python: libpython3-dev
 
 ## Quick start

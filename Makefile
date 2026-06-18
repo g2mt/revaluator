@@ -1,13 +1,15 @@
 GO      ?= go
 BINDIR  ?= bin
 
-.PHONY: all python clean
+.PHONY: all python javascript clean
 
-all: python
+all: python javascript
 
-# python build requires cgo + libpython dev headers/libs
 python:
 	CGO_ENABLED=1 $(GO) build -tags python -o $(BINDIR)/server-python ./cmd/server
+
+javascript:
+	cd $(BINDIR)/js && npm install
 
 clean:
 	rm -rf $(BINDIR)
