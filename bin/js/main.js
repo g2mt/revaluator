@@ -1,0 +1,388 @@
+/* server-javascript — JSON-RPC eval server for JavaScript
+
+ * Accepts newline-delimited JSON-RPC on stdin; responds on stdout.
+ * Evaluates the expression at the given 0-based line in a full-buffer
+ * source string using acorn for AST-based prefix/expression splitting
+ * and vm.runInContext for incremental stateful evaluation.
+ *
+ * Protocol:
+ *   → { "id": N, "method": "eval",
+ *       "params": { "source": "<buffer>", "line": <0-based line> } }
+ *   ← { "id": N, "value": "<repr>", "error": "" }
+ *
+ *   → { "id": N, "method": "shutdown" }
+ *   (server exits cleanly)
+ */
+
+'use strict';
+
+const readline = require('readline');
+const vm = require('node:vm');
+const util = require('node:util');
+const acorn = require('acorn');
+
+// ---------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-process VM context. Holds all accumulated bindings from prefix
+ * evaluation across multiple requests. Rebuilt when the prefix changes
+ * in a way that cannot be incrementally applied.
+ *
+ * @type {vm.Context}
+ */
+let context = vm.createContext();
+
+/**
+ * The last prefix that was successfully evaluated into context.
+ * Compared on every eval to decide whether to reuse, extend, or
+ * rebuild the context.
+ *
+ * @type {string}
+ */
+let lastPrefix = '';
+
+/**
+ * Cached line-start index computed once per eval from the source string.
+ * lineStarts[i] is the character offset where line i (0-based) begins.
+ *
+ * @type {number[]}
+ */
+let _lineStarts = [0];
+
+// ---------------------------------------------------------------------------
+// JSON-RPC helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Write a JSON-RPC response to stdout followed by a newline.
+ *
+ * @param {number} id    — echoed from the request
+ * @param {string} value — result repr (empty string if none)
+ * @param {string} error — human-readable error (empty string on success)
+ */
+function respond(id, value, error) {
+  const out = JSON.stringify({
+    id: id,
+    value: value || '',
+    error: error || '',
+  });
+  process.stdout.write(out + '\n');
+}
+
+// ---------------------------------------------------------------------------
+// AST splitting with acorn
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a line-start index array for the given source string.
+ *
+ * Each entry holds the byte offset of the first character on that line
+ * (0-indexed).  lineStarts[0] === 0 always; lineStarts[i] for i>0 points
+ * just past the preceding newline byte (0xa).
+ *
+ * @param {string} source
+ * @returns {number[]}
+ */
+function buildLineStarts(source) {
+  const starts = [0];
+  for (let i = 0; i < source.length; i++) {
+    if (source.charCodeAt(i) === 0x0a /* '\n' */) {
+      starts.push(i + 1);
+    }
+  }
+  return starts;
+}
+
+/**
+ * Convert an acorn 1-based line + 0-based column to a 0-based character
+ * offset in source.  Uses a pre-computed line-start index.
+ *
+ * @param {number} line   — 1-indexed line number
+ * @param {number} column — 0-indexed column within that line
+ * @param {number[]} lineStarts
+ * @returns {number} 0-based offset into source
+ */
+function posToOffset(line, column, lineStarts) {
+  return lineStarts[line - 1] + column;
+}
+
+/**
+ * Parse source with acorn and find the top-level node whose start
+ * line lies at or after the given 0-based line number.
+ *
+ * Returns the character offset of the node start and its source text.
+ * If parsing fails or the AST is empty, falls back to the start of
+ * the given line with an empty expression.
+ *
+ * @param {string} source — full buffer text
+ * @param {number} line   — 0-based cursor line number
+ * @returns {{ exprStart: number, expr: string }}
+ */
+function splitSource(source, line) {
+  const lineStarts = buildLineStarts(source);
+  _lineStarts = lineStarts; // cache for potential fallback use
+
+  /** @type {acorn.Node|null} */
+  let ast;
+  try {
+    ast = acorn.parse(source, {
+      ecmaVersion: 'latest',
+      locations: true,
+      sourceType: 'module',
+      allowAwaitOutsideFunction: true,
+      allowImportExportEverywhere: true,
+      allowReturnOutsideFunction: true,
+    });
+  } catch (_) {
+    // Syntax error — return empty expr starting at the given line.
+    const fallbackStart = lineStarts[Math.min(line, lineStarts.length - 1)] || 0;
+    return { exprStart: fallbackStart, expr: '' };
+  }
+
+  if (!ast.body || ast.body.length === 0) {
+    const fallbackStart = lineStarts[Math.min(line, lineStarts.length - 1)] || 0;
+    return { exprStart: fallbackStart, expr: '' };
+  }
+
+  // Find the first top-level statement whose starting line (0-based) is
+  // at or past the cursor line.
+  let target = null;
+  for (const node of ast.body) {
+    const nodeLine = node.loc.start.line - 1; // 0-based
+    if (nodeLine >= line) {
+      target = node;
+      break;
+    }
+  }
+
+  // No statement at or past cursor — use the last one.
+  if (!target) {
+    target = ast.body[ast.body.length - 1];
+  }
+
+  const exprStart = posToOffset(target.loc.start.line, target.loc.start.column, lineStarts);
+  const exprEnd = posToOffset(target.loc.end.line, target.loc.end.column, lineStarts);
+  const expr = source.slice(exprStart, exprEnd);
+
+  return { exprStart, expr };
+}
+
+// ---------------------------------------------------------------------------
+// Context management
+// ---------------------------------------------------------------------------
+
+/**
+ * Evaluate code in the vm context, returning the result value (may be
+ * undefined for statements with no meaningful return value).
+ *
+ * Accepts let/const declarations — vm.runInContext handles them in
+ * the context's global scope.
+ *
+ * @param {string} code   — JavaScript source to evaluate
+ * @param {vm.Context} ctx — the context to evaluate in
+ * @returns {any} the completion value of the code
+ * @throws {Error} if evaluation fails
+ */
+function evalInContext(code, ctx) {
+  // vm.runInContext supports let/const; they create bindings that
+  // persist across invocations within the same context.
+  return vm.runInContext(code, ctx);
+}
+
+/**
+ * Rebuild the context from scratch by discarding the current one
+ * and creating a fresh vm context.
+ */
+function resetContext() {
+  context = vm.createContext();
+}
+
+/**
+ * Evaluate a prefix into the vm context using incremental caching:
+ *
+ *  - If prefix matches lastPrefix, do nothing (context is up to date).
+ *  - If prefix grew by some new text (and the old prefix is a prefix
+ *    of the new one), evaluate only the delta.
+ *  - Otherwise, rebuild the context from scratch and evaluate the
+ *    entire prefix.
+ *
+ * On error, resets the context and lastPrefix so the next eval starts
+ * clean.
+ *
+ * @param {string} prefix — all source text before the current expression
+ * @returns {boolean} true on success, false if prefix evaluation failed
+ */
+function evalPrefix(prefix) {
+  if (prefix === lastPrefix) {
+    return true; // nothing to do
+  }
+
+  let ok = false;
+  try {
+    if (lastPrefix !== '' && prefix.startsWith(lastPrefix)) {
+      // Prefix grew. Evaluate only the delta.
+      const delta = prefix.slice(lastPrefix.length);
+      if (delta.length > 0 && (delta[0] === '\n' || delta[0] === ';')) {
+        // Clean continuation — just run the new statements.
+        evalInContext(delta, context);
+        ok = true;
+      } else {
+        // Delta doesn't start cleanly; fall through to full rebuild.
+        ok = false;
+      }
+    }
+
+    if (!ok) {
+      // Full rebuild from scratch.
+      resetContext();
+      evalInContext(prefix, context);
+      ok = true;
+    }
+  } catch (err) {
+    // Prefix evaluation failed — reset everything so we don't carry
+    // a broken context forward.
+    resetContext();
+    lastPrefix = '';
+    throw err; // re-thrown so the caller can return the error
+  }
+
+  lastPrefix = prefix;
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// repr
+// ---------------------------------------------------------------------------
+
+/**
+ * Convert a JavaScript value to its string representation.
+ *
+ * Mirrors Python's repr(): primitives get their natural string form,
+ * objects get util.inspect output. undefined returns the empty string
+ * (no value to display, e.g. a statement that produced nothing).
+ *
+ * @param {any} val
+ * @returns {string}
+ */
+function repr(val) {
+  if (val === undefined || val === null) {
+    return val === null ? 'null' : '';
+  }
+  if (typeof val === 'string') {
+    // Re-wrap so quotes are visible (matching Python repr style).
+    return util.inspect(val);
+  }
+  if (typeof val === 'function') {
+    return `[Function: ${val.name || '(anonymous)'}]`;
+  }
+  if (typeof val === 'symbol') {
+    return val.toString();
+  }
+  return util.inspect(val, {
+    depth: 4,
+    maxArrayLength: 100,
+    breakLength: 80,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// eval entry point
+// ---------------------------------------------------------------------------
+
+/**
+ * Evaluate the expression at the given 0-based line within the full
+ * buffer text.
+ *
+ * 1. Split source into prefix + current expression via acorn AST.
+ * 2. Incrementally maintain the vm context from the prefix.
+ * 3. Evaluate the current expression in that context.
+ * 4. Return the repr of the result.
+ *
+ * @param {string} source — full buffer text
+ * @param {number} line   — 0-based cursor line number
+ * @returns {{ value: string, error: string }}
+ */
+function evalAt(source, line) {
+  // 1. Locate the current expression.
+  const { exprStart, expr } = splitSource(source, line);
+  const prefix = source.slice(0, Math.min(exprStart, source.length));
+
+  // 2. Bring the vm context up to date with the prefix lines.
+  try {
+    evalPrefix(prefix);
+  } catch (err) {
+    return { value: '', error: err.message || String(err) };
+  }
+
+  // 3. Evaluate the expression itself.
+  if (expr.trim() === '') {
+    return { value: '', error: '' };
+  }
+
+  let result;
+  try {
+    result = evalInContext(expr, context);
+  } catch (err) {
+    return { value: '', error: err.message || String(err) };
+  }
+
+  // 4. Produce a representation.
+  return { value: repr(result), error: '' };
+}
+
+// ---------------------------------------------------------------------------
+// Main loop
+// ---------------------------------------------------------------------------
+
+const rl = readline.createInterface({
+  input: process.stdin,
+  output: process.stdout,
+  terminal: false,
+});
+
+rl.on('line', (line) => {
+  /** @type {{ id: number, method: string, params?: object }} */
+  let req;
+  try {
+    req = JSON.parse(line);
+  } catch (_) {
+    respond(0, '', 'invalid request: not valid JSON');
+    return;
+  }
+
+  if (typeof req.id !== 'number' || typeof req.method !== 'string') {
+    respond(req.id || 0, '', 'invalid request: missing id or method');
+    return;
+  }
+
+  switch (req.method) {
+    case 'eval': {
+      const source = req.params && req.params.source;
+      const line = req.params && req.params.line;
+
+      if (typeof source !== 'string') {
+        respond(req.id, '', "missing or invalid 'source' parameter (expected string)");
+        return;
+      }
+      if (typeof line !== 'number') {
+        respond(req.id, '', "missing or invalid 'line' parameter (expected number)");
+        return;
+      }
+
+      const { value, error } = evalAt(source, Math.floor(line));
+      respond(req.id, value, error);
+      break;
+    }
+
+    case 'shutdown':
+      rl.close();
+      process.exit(0);
+      break;
+
+    default:
+      respond(req.id, '', `unknown method: '${req.method}'`);
+      break;
+  }
+});
